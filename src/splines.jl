@@ -14,36 +14,34 @@ mutable struct Spline{T}
     end
 end
 
-# Given a polinomial index, returns the indexer of the last parameter before the first parameter of the referenced polinomial
-_base_param_index_(poly_index::Int) = (poly_index-1)*4
-
 # Performs natural cubic spline interpolation
 function splineint(s::Spline{T}, x_out::Number) where {T<:Number}
-    local poly_index::Int = 1
-    local base_idx::Int
-
+    
     if x_out > s.x[end]
         # Extrapolation after last point
-        poly_index = length(s.x) - 1
-        base_idx = _base_param_index_(poly_index)
-        return (x_out - s.x[end])*(s.params[base_idx + 2] + 2*s.params[base_idx + 3]*s.x[end] + 3*s.params[base_idx + 4]*(s.x[end]^2)) + s.y[end]
+        n = length(s.x)
+        x = x_out - s.x[n]
+        dxn = s.x[n] - s.x[n-1]
+        b = s.params[n-3] + 2*s.params[n-2]*dxn + 3*s.params[n-1]*dxn*dxn
+        return s.y[n] + b*x
+    
     elseif x_out < s.x[1]
         # Extrapolation before first point
-        base_idx = 0
-        return (x_out - s.x[1])*(s.params[base_idx + 2] + 2*s.params[base_idx + 3]*s.x[1] + 3*s.params[base_idx + 4]*(s.x[1]^2)) + s.y[1]
+        return s.params[1] + s.params[2]*(x_out - s.x[1])
+    
     else
-        # Interplation
-        while x_out > s.x[poly_index+1]
-            poly_index += 1
+        # Find polynomial
+        i = 1
+        while x_out > s.x[i+1]
+            i = i + 1
         end
-
-        base_idx = _base_param_index_(poly_index)
-
-        #P1                       P2                    P3                     ...
-        #1   2    3      4        5   6    7      8     9   10   11     12
-        #a + bx + cx^2 + dx^3     a + bx + cx^2 + dx^3  a + bx + cx^2 + dx^3   ...
-        return s.params[base_idx + 1] + s.params[base_idx + 2]*x_out +
-            s.params[base_idx + 3]*(x_out^2) + s.params[base_idx + 4]*(x_out^3)
+        
+        x = x_out - s.x[i]
+        a = s.params[4*i - 3]
+        b = s.params[4*i - 2]
+        c = s.params[4*i - 1]
+        d = s.params[4*i]
+        return a + b*x + c*x*x + d*x*x*x
     end
 end
 
@@ -59,81 +57,32 @@ end
 
 # Build a Spline object by fitting 3rd order polynomials around points (x_in, y_in)
 function splinefit(x_in::Vector{T}, y_in::Vector{Float64}) :: Spline{T} where {T}
-    #
-    # TODO: optimize. See http://www.math.ntnu.no/emner/TMA4215/2008h/cubicsplines.pdf
-    #
-    points_count = length(x_in)
-    @assert points_count == length(y_in) "x_in and y_in doesn't conform on sizes."
-    matrix_n = 4*(points_count-1) # the main matrix is a square matrix matrix_n by matrix_n
+    n = length(x_in)
+    @assert n == length(y_in) "x_in and y_in doesn't conform on sizes."
 
-    A = zeros(matrix_n, matrix_n)
-    b = zeros(matrix_n)
+    H = [X[i+1] - X[i] for i in 1:(n-1)]  # i in [0,...,n-2]
+    A = Y
+    Alpha = [(3/H[i])*(A[i+1] - A[i]) - (3/H[i-1])*(A[i] - A[i-1]) for i in 2:(n-1)]
+    Alpha = [0; Alpha]
 
-    # Known values for polys
+    L = ones(n)
+    Mu = zeros(n)
+    Z = zeros(n)
+    B = zeros(n)
+    C = zeros(n)
+    D = zeros(n)
 
-    # First Point
-    A[1,1] = 1.0
-    A[1,2] = x_in[1]
-    A[1,3] = x_in[1]^2
-    A[1,4] = x_in[1]^3
-    b[1] = y_in[1]
-
-    # Last Point
-    base_idx = 4*(points_count - 2)
-    A[2, base_idx + 1] = 1.0
-    A[2, base_idx + 2] = x_in[points_count]
-    A[2, base_idx + 3] = x_in[points_count]^2
-    A[2, base_idx + 4] = x_in[points_count]^3
-    b[2] = y_in[points_count]
-
-    # Inner Points
-    row = 3
-    for i in 2:(points_count-1)
-        # Connecting to left poly
-        A[row, (i-2)*4 + 1] = 1.0
-        A[row, (i-2)*4 + 2] = x_in[i]
-        A[row, (i-2)*4 + 3] = x_in[i]^2
-        A[row, (i-2)*4 + 4] = x_in[i]^3
-        b[row] = y_in[i]
-
-        row += 1
-
-        # Connecting to right poly
-        A[row, (i-1)*4 + 1] = 1.0
-        A[row, (i-1)*4 + 2] = x_in[i]
-        A[row, (i-1)*4 + 3] = x_in[i]^2
-        A[row, (i-1)*4 + 4] = x_in[i]^3
-        b[row] = y_in[i]
-
-        row += 1
-
-        # Conditions on first order derivatives
-        A[row, (i-2)*4 + 2] = 1.0
-        A[row, (i-2)*4 + 3] = 2.0*x_in[i]
-        A[row, (i-2)*4 + 4] = 3.0*(x_in[i]^2)
-        A[row, (i-1)*4 + 2] = -1.0
-        A[row, (i-1)*4 + 3] = -2.0*x_in[i]
-        A[row, (i-1)*4 + 4] = -3.0*(x_in[i]^2)
-
-        row += 1
-
-        # Conditions on second order derivatives
-        A[row, (i-2)*4 + 3] = 2.0
-        A[row, (i-2)*4 + 4] = 6.0 * x_in[i]
-        A[row, (i-1)*4 + 3] = -2.0
-        A[row, (i-1)*4 + 4] = -6.0 * x_in[i]
-
-        row += 1
+    for i in 2:n-1
+        L[i] = 2 * (X[i+1] -  X[i-1]) - H[i-1] * Mu[i-1]
+        Mu[i] = H[i] / L[i]
+        Z[i] = (Alpha[i] - H[i-1]*Z[i-1]) /  L[i]
     end
 
-    # Conditions for natural cubic spline
-    A[row, 3] = 2.0
-    A[row, 4] = 6.0 * x_in[1]
+    for i in n-1:-1:1
+        C[i] = Z[i] - Mu[i] * C[i+1]
+        B[i] = (A[i+1] - A[i]) / H[i] - H[i] * (C[i+1] + 2*C[i]) / 3
+        D[i] = (C[i+1] - C[i]) / (3*H[i])
+    end
 
-    row += 1
-
-    A[row, (points_count-2)*4 + 3] = 2.0
-    A[row, (points_count-2)*4 + 4] = 6.0 * x_in[points_count]
-
-    return Spline(x_in, y_in, A \ b)
+    return reduce(vcat, [[A[i], B[i], C[i], D[i]] for i in 1:n-1])
 end
